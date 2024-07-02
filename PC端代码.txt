@@ -1,0 +1,212 @@
+# coding=gb2312
+
+import tkinter as tk
+from tkinter import filedialog
+from openpyxl import Workbook
+from PIL import Image, ImageTk
+import socket
+from threading import Thread
+import queue
+import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import tkinter.font as tkFont
+import tkinter.filedialog as filedialog  # 添加此行
+
+class TCPClientMonitor:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("管理员界面")
+        self.master.geometry("1500x1200")  # 设置窗口初始大小
+        bold_font = tkFont.Font(family="Helvetica", size=30, weight="bold")
+
+        # 创建连接按钮
+        self.connect_button = tk.Button(master, text="连接飞腾派", command=self.connect_to_server, font=bold_font,
+                                        width=20)
+        self.connect_button.grid(row=0, column=0, padx=50, pady=5)
+
+        # 创建输入框
+        # 创建输入框标签
+        self.measure_label = tk.Label(master, text="需要测量次数", font=bold_font)
+        self.measure_label.grid(row=0, column=1, padx=5, pady=5)
+
+        # 创建输入框
+        self.input_entry = tk.Entry(master, font=bold_font, width=10)
+        self.input_entry.grid(row=0, column=2, padx=0, pady=5)
+
+        # 创建“次”标签并紧挨着输入框右侧
+        self.unit_label = tk.Label(master, text="次", font=("Helvetica", 30), width=2)
+        self.unit_label.grid(row=0, column=3, padx=0, pady=5)
+        # 创建发送按钮
+        self.send_button = tk.Button(master, text="开始测量", command=self.send_data, font=bold_font, width=20)
+        self.send_button.grid(row=1, column=0, padx=50, pady=5)
+        # 创建保存数据按钮
+        self.save_button = tk.Button(master, text="保存数据", command=self.save_data, font=bold_font, width=10)
+        self.save_button.grid(row=1, column=1, padx=10, pady=5)  # 将按钮放在合适的位置
+
+        # 创建结束按钮
+        self.stop_button = tk.Button(master, text="结束测量", command=self.stop_measurement, font=bold_font, width=10)
+        self.stop_button.grid(row=1, column=2, padx=10, pady=5)
+
+        # 创建文本框显示数据
+        self.text_box = tk.Text(master, font=bold_font, height=10, width=80)
+        self.text_box.grid(row=2, columnspan=4, padx=10, pady=10)
+
+        # 创建图表容器
+        self.fig, self.ax = plt.subplots(figsize=(10, 6))  # 设置图表大小
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.master)
+        self.canvas.get_tk_widget().grid(row=3, columnspan=4, padx=10, pady=10, sticky="nsew")
+
+        # 使图表容器随窗口调整大小
+        self.master.grid_rowconfigure(3, weight=1)
+        self.master.grid_columnconfigure(0, weight=1)
+        self.master.grid_columnconfigure(1, weight=1)
+        self.master.grid_columnconfigure(2, weight=1)
+        self.master.grid_columnconfigure(3, weight=1)
+
+        # 初始化网络变量
+        self.client_socket = None
+        self.read_thread = None
+        self.stop_measurement_flag = False
+        self.data_queue = queue.Queue()
+
+    def connect_to_server(self):
+        #self.connect_button.config(state="disabled")  # 禁用连接按钮
+        client_thread = Thread(target=self.connect_to_server_thread)
+        client_thread.start()
+
+    def connect_to_server_thread(self):
+        try:
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.settimeout(500)  # 设置超时时间
+            #self.client_socket.connect(('192.168.170.70', 65432))  # 请替换为服务器的实际IP地址
+            self.client_socket.connect(('192.168.170.111', 65432))
+            self.text_box.insert(tk.END, "已连接到服务器\n")
+
+            # 启动一个线程来读取服务器数据
+            self.read_thread = Thread(target=self.read_server_data)
+            self.read_thread.start()
+        except socket.timeout:
+            self.text_box.insert(tk.END, "连接服务器超时\n")
+            self.connect_button.config(state="normal")  # 启用连接按钮
+        except Exception as e:
+            self.text_box.insert(tk.END, f"连接服务器失败: {e}\n")
+            self.connect_button.config(state="normal")  # 启用连接按钮
+
+    def save_data(self):
+        try:
+            # 弹出文件对话框，选择保存的文件路径和文件名
+            file_path = filedialog.asksaveasfilename(defaultextension=".xlsx", filetypes=[("Excel files", "*.xlsx")])
+            if file_path:
+                # 创建一个Excel工作簿
+                wb = Workbook()
+                ws = wb.active
+
+                # 获取文本框内容
+                file_content = self.text_box.get(1.0, tk.END)
+
+                # 分割文本框内容为行
+                lines = file_content.strip().split('\n')
+
+                # 提取有用信息并保存到Excel表格
+                useful_data = []
+                M_time = 0
+                current_data = []
+
+                for line in lines:
+                    if '测量火花塞间隙为' in line or '测量精度为' in line or '测量方差为' in line or '有效次数为' in line or '测量时长为' in line:
+                        parts = line.split('：')
+                        if len(parts) == 2:
+                            current_data.append(parts[1].strip())
+                    elif current_data:
+                        M_time += 1
+                        if M_time == 1:  # 写入表头
+                            ws.append(["测量次数", "测量火花塞间隙", "测量精度", "测量方差", "有效次数", "测量时长"])
+                        current_data.insert(0, M_time)  # 添加测量次数列
+                        ws.append(current_data)  # 写入当前数据
+                        current_data = []
+
+                # 保存Excel文件
+                wb.save(file_path)
+                self.text_box.insert(tk.END, "数据保存成功！\n")
+        except Exception as e:
+            self.text_box.insert(tk.END, f"保存数据出错: {e}\n")
+
+    def read_server_data(self):
+        while not self.stop_measurement_flag:
+            if self.client_socket:
+                try:
+                    data = self.client_socket.recv(4096)
+                    if data:
+                        self.data_queue.put(data.decode("utf-8", errors="ignore"))
+                        self.master.after(100, self.process_server_data)
+                except Exception as e:
+                    self.text_box.insert(tk.END, f"读取服务器数据出错: {e}\n")
+                    break
+
+    def process_server_data(self):
+        while not self.data_queue.empty():
+            decoded_data = self.data_queue.get().strip()
+            data_array = decoded_data.split(":")
+
+            # 打印测量火花塞间隙
+            gap_measurement = f"{float(data_array[0]):.3f}"
+            self.text_box.insert(tk.END, f"..测量火花塞间隙为：{gap_measurement} mm\n")
+            gap_measurement = f"{float(data_array[1]):.3f}"
+            self.text_box.insert(tk.END, f"..测量精度为：{gap_measurement} mm\n")
+            gap_measurement = f"{float(data_array[2]):.3f}"
+            self.text_box.insert(tk.END, f"..测量方差为：{gap_measurement} mm\n")
+            # 打印有效次数
+            valid_count = data_array[3]
+            self.text_box.insert(tk.END, f"..有效次数为：{valid_count} 次\n")
+
+            # 打印测量时长
+            measurement_time = f"{float(data_array[4]):.2f}"
+            self.text_box.insert(tk.END, f"..测量时长为：{measurement_time} 秒\n")
+            self.text_box.insert(tk.END, f".......................\n")
+            self.text_box.see(tk.END)
+            self.plot_data(data_array)
+
+    def plot_data(self, data_array):
+        self.ax.clear()
+        rounded_data = [round(float(num), 3) for num in data_array[5:]]
+        self.ax.plot(rounded_data)
+
+        for i in range(len(rounded_data)):  # 将range函数的起始索引改为0
+            data_index = i
+            data_value = rounded_data[data_index]
+            self.ax.annotate(f"{data_value}", (data_index, data_value), textcoords="offset points", xytext=(0, 10),
+                             ha='center')
+
+        self.canvas.draw()
+
+    def send_data(self):
+        if not self.client_socket:
+            # 如果客户端套接字不存在，尝试建立连接
+            self.connect_to_server()
+            return
+
+        try:
+            input_data = self.input_entry.get()
+            send_message = f'5566:{input_data}\n'
+            self.client_socket.sendall(send_message.encode('utf-8'))
+            self.text_box.insert(tk.END, f"开始测量: \n.......................\n")
+        except Exception as e:
+            self.text_box.insert(tk.END, f"发送数据失败: {e}\n")
+
+    def stop_measurement(self):
+        self.stop_measurement_flag = True
+        if self.read_thread:
+            self.read_thread.join()
+        if self.client_socket:
+            self.client_socket.close()
+        self.master.destroy()
+
+
+def main():
+    root = tk.Tk()
+    app = TCPClientMonitor(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

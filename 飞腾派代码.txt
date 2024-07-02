@@ -1,0 +1,302 @@
+# coding=gb2312
+import cv2
+import socket
+import time
+import numpy as np
+
+#############################
+## 名称：数据处理模块
+## 实现：对多帧图片计算结果数据的处理，包括异常值处理，均值方差计算，以及图表绘制
+###################################
+#变量声明
+Final_distance=0
+mean_Ratio_pToms=0
+def process_list(lst, constant1, constant2):
+    # 剔除列表前5个值
+    lst = lst[constant1:]
+
+    # 将列表转换为NumPy数组
+    arr = np.array(lst)
+
+    # 计算平均值和标准差
+    mean = np.mean(arr)
+    std_dev = np.std(arr)
+    if std_dev != 0:
+        # 计算Z-score
+        z_scores = (arr - mean) / std_dev
+
+        # 标记绝对值大于3的异常值索引
+        outliers_indices = np.where(np.abs(z_scores) > constant2)
+
+        # 删除异常值
+        arr_without_outliers = np.delete(arr, outliers_indices)
+
+        # 计算剔除异常值后的平均值
+        mean_without_outliers = np.mean(arr_without_outliers)
+        return arr_without_outliers, mean_without_outliers,std_dev*std_dev
+    else:
+        mean_without_outliers = np.mean(arr)
+        return arr, mean,std_dev*std_dev
+
+# 创建 TCP 服务器
+server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server_address = ('0.0.0.0', 65432)  # 使用任意可用的地址
+server_socket.bind(server_address)
+server_socket.listen(1)
+
+print("服务器已启动，等待客户端连接...")
+
+while True:
+    try:
+        ################################################
+        ## 名称：TCP接收模块
+        ## 实现：接收特定帧序列后，开始执行测量任务
+        #####################################
+        # 接受客户端连接
+        client_socket, client_address = server_socket.accept()
+        print(f"客户端已连接: {client_address}")
+
+        while True:
+            data = client_socket.recv(1024).decode().strip()
+
+            # 按照 ":" 分割数据
+            parts = data.split(':')
+
+            # 确保接收到的数据中有至少两个部分
+            if len(parts) >= 2:
+                # 如果第一个数据是5566，则将第二个数据赋值给变量count
+                if parts[0] == '5566':
+                    count_max = int(parts[1])
+                    print("开始测量，测量次数"+str(count_max)+"次")
+                    break
+
+        #############################
+        ## 名称：测量模块
+        ## 实现：从视频中提取出多帧图片，将多帧图片测量的结果进行异常值检验后，取平均值作为最终结果
+        ##########################
+        # 读取视频文件
+        #cap = cv2.VideoCapture(r"C:\Users\Alex\Videos\Captures\2.mp4")
+        cap = cv2.VideoCapture(1)
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 2560)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1440)
+        # 循环读取视频帧并转换为灰度图像
+
+        # 创建一个空列表来保存每次循环的结果
+        distances = []
+        Ratio_pToms = []
+
+        count=0
+        image_show_time=0
+        start_time = time.time()
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            # 读取图像
+            #########################
+            ## 像素与毫米之比测量模块
+            ## 实现：获取像素与毫米之比
+            #########################
+            image_circular = frame
+            if mean_Ratio_pToms==0:
+                template_circular = cv2.imread(r'D:/Download_for_English/eclipse/test_for_OpenCV/demo1/standard_round.jpg')
+                # # 将图像和模板都转换为灰度
+
+                imageGray_circular = cv2.cvtColor(image_circular, cv2.COLOR_BGR2GRAY)
+                templateGray_circular = cv2.cvtColor(template_circular, cv2.COLOR_BGR2GRAY)
+                #
+                # 模板匹配法
+                result = cv2.matchTemplate(imageGray_circular, templateGray_circular, cv2.TM_CCOEFF_NORMED)
+                (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(result)
+
+                # # 确定起点和终点的（x，y）坐标边界框
+                (startX, startY) = maxLoc
+                endX = startX + templateGray_circular.shape[1]
+                endY = startY + templateGray_circular.shape[0]
+                # 切割匹配结果
+                matched_region_circular = imageGray_circular[startY:endY, startX:endX]
+                #
+                # # 通过Canny边缘检测找到圆形轮廓
+                # 二值化处理
+                _, binary_image = cv2.threshold(matched_region_circular, 100, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                border_size = 1  # 外围添加一圈白色像素
+                binary = cv2.copyMakeBorder(binary_image, border_size, border_size, border_size, border_size, cv2.BORDER_CONSTANT,
+                                            value=255)
+                canny = cv2.Canny(binary, 50, 150)
+                _, contours, _ = cv2.findContours(canny, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                # 初始化最大矩形的尺寸和位置
+                max_area = 0
+                max_x = 0
+                max_y = 0
+                max_w = 0
+                max_h = 0
+
+                # 遍历轮廓
+                for contour in contours:
+                    # 计算轮廓的外接矩形
+                    x, y, w, h = cv2.boundingRect(contour)
+                    # 计算矩形的面积
+                    area = w * h
+                    # 更新最大矩形的信息
+                    if area > max_area:
+                        max_area = area
+                        max_x = x
+                        max_y = y
+                        max_w = w
+                        max_h = h
+
+                # 绘制最大的矩形
+                #cv2.rectangle(image, (max_x, max_y), (max_x + max_w, max_y + max_h), (0, 255, 0), 2)
+                Actual_size = 2.54  # 毫米
+                Ratio_pTom = Actual_size / max_w  #像素与毫米之比
+                Ratio_pToms.append(Ratio_pTom)
+
+            #########################
+            ## 火花塞间隙测量模块
+            ## 实现：获取火花塞间隙的像素值
+            #########################
+            count += 1
+            image = frame
+            template = cv2.imread(r'D:/Download_for_English/eclipse/test_for_OpenCV/demo1/temp1_HHS.jpg')
+
+            # 将图像和模板都转换为灰度
+            imageGray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            templateGray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+            if image_show_time==-1:
+                cv2.imshow('Detected rectangles', imageGray)
+                cv2.waitKey(0)
+            # 模板匹配法
+            result = cv2.matchTemplate(imageGray, templateGray, cv2.TM_CCOEFF_NORMED)
+            (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(result)
+
+            # 确定起点和终点的（x，y）坐标边界框
+            (startX, startY) = maxLoc
+            endX = startX + template.shape[1]
+            endY = startY + template.shape[0]
+
+            # 切割匹配结果
+            matched_region = image[startY:endY, startX:endX]
+            if image_show_time==-1:
+                cv2.imshow('Detected rectangles', matched_region)
+                cv2.waitKey(0)
+            original_image = image
+            image = matched_region
+
+            template = cv2.imread(r'D:/Download_for_English/eclipse/test_for_OpenCV/demo1/temp2_HHS.jpg')
+
+            # 将图像和模板都转换为灰度
+            imageGray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            templateGray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
+
+            # 模板匹配法
+            result = cv2.matchTemplate(imageGray, templateGray, cv2.TM_CCOEFF_NORMED)
+            (minVal, maxVal, minLoc, maxLoc) = cv2.minMaxLoc(result)
+
+            # 确定起点和终点的（x，y）坐标边界框
+            (startX, startY) = maxLoc
+            endX = startX + template.shape[1]
+            endY = startY + template.shape[0]
+            # 切割匹配结果
+
+            matched_region = image[startY:endY, startX:endX]
+
+            image = matched_region
+            height, width, _ = image.shape
+
+            # 将整张图片的最外侧像素修改为白色
+            for y in range(height):
+                for x in range(width):
+                    if y == 0 or y == height - 1 or x == 0 or x == width - 1:
+                        # 如果是最外侧像素，将其修改为白色
+                        image[y, x] = (255, 255, 255)
+            # 将图像转换为灰度图
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+            # 阈值化处理，将灰度图转换为二值图
+            _, binary = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+
+            # 进行图像处理，使用Canny边缘检测
+            edges = cv2.Canny(binary, 50, 150)
+
+            # 寻找轮廓
+            _,contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            contour_image = np.zeros_like(image)
+
+            # 过滤掉面积较小的轮廓
+            min_area = 0.05
+            filtered_contours = [cnt for cnt in contours if cv2.contourArea(cnt) > min_area]
+            if image_show_time==-1:
+                for cnt in filtered_contours:
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    x=x+1058
+                    y=y+418
+                    cv2.rectangle(original_image, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+                #cv2.imshow('Detected rectangles', matched_region)
+                #cv2.waitKey(0)
+                cv2.imshow('Detected rectangles', gray)
+                cv2.waitKey(0)
+                cv2.imshow('Detected rectangles', binary)
+                cv2.waitKey(0)
+                cv2.imshow('Detected rectangles', edges)
+                cv2.waitKey(0)
+                cv2.imshow('Detected rectangles', image)
+                cv2.waitKey(0)
+                cv2.imshow('Detected rectangles', original_image)
+                cv2.waitKey(0)
+                #如果检测到的长方形数量为2，则继续
+            if len(filtered_contours) == 2:
+                x1, y1, w1, h1 = cv2.boundingRect(filtered_contours[0])
+                x2, y2, w2, h2 = cv2.boundingRect(filtered_contours[1])
+
+                # 计算两个长方形中心点的坐标
+                center1 = np.array([x1 + w1 / 2, y1])
+                center2 = np.array([x2 + w2 / 2, y2 + h2])
+
+                # 计算两个中心点之间的距离
+                distance = np.linalg.norm(center1 - center2)
+                distances.append(distance)
+            image_show_time = image_show_time + 1
+            # 截取40张图片后退出循环
+            if count == count_max:
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                break
+
+        # 释放视频对象
+        cap.release()
+        cv2.destroyAllWindows()
+
+        #############################
+        ## 名称：数据处理模块
+        ## 实现：对多帧图片计算结果数据的处理，包括异常值处理，均值方差计算，以及图表绘制
+        ###################################
+
+        filtered_distances, mean_distances, theta_distances = process_list(distances, 5, 1)
+        if mean_Ratio_pToms==0:
+            filtered_Ratio_pToms, mean_Ratio_pToms,theta_Ratio_pToms = process_list(Ratio_pToms, 5, 1)
+
+        ################################
+        ## 名称：TCP发送模块
+        ## 实现：当测量任务完成后，向PC端发送最终的测量数据
+        ######################
+        Final_distance=mean_distances * mean_Ratio_pToms
+        data_to_send = str(Final_distance) + ':'
+        data_to_send += str(mean_Ratio_pToms) + ':'
+        data_to_send += str(theta_distances) + ':'
+        data_to_send += str(count-5) + ':'
+        data_to_send += str(elapsed_time) + ':'
+        for i, data in enumerate(filtered_distances):
+            data_to_send += str(data * mean_Ratio_pToms)
+            if i < len(filtered_distances) - 1:
+                data_to_send += ':'
+        data_to_send += '\n'
+        print("测量完成，已发送测量数据")
+        client_socket.sendall(data_to_send.encode())
+        time.sleep(1)  # 等待一段时间，以确保数据发送完成
+        client_socket.close()
+    except Exception as e:
+        print(f"发生错误: {e}")
+        if client_socket:
+            client_socket.close()
